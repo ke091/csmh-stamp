@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>충남반도체고 축제 스탬프 투어</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;700;900&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght=400;600;700;900&display=swap');
 
   :root {
     --bg: #F8F9FA;
@@ -242,7 +242,25 @@
 
 <div class="toast" id="element-toast"></div>
 
-<script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-app.js";
+  import { getDatabase, ref, onValue, set, push, remove, update, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-database.js";
+
+  // 보내주신 정보 바탕으로 연동 타겟 활성화
+  const firebaseConfig = {
+    apiKey: "AIzaSyD1rALHQmM1PCFDv9Iw5WD5YDbllXjjP-o",
+    authDomain: "festival-stamp.firebaseapp.com",
+    databaseURL: "https://festival-stamp-default-rtdb.firebaseio.com",
+    projectId: "festival-stamp",
+    storageBucket: "festival-stamp.firebasestorage.app",
+    messagingSenderId: "387126166541",
+    appId: "1:387126166541:web:7e878ab36d64978bedc144",
+    measurementId: "G-PQREBCP1XX"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
   const CLASSES = [
     { id:"c11", label:"1학년 1반", short:"1-1", pw:"1101" },
     { id:"c12", label:"1학년 2반", short:"1-2", pw:"1102" },
@@ -256,28 +274,28 @@
   ];
 
   const cls = id => CLASSES.find(c => c.id === id) || {};
-  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
 
   let currentStudent = null;
   let activeBoothId = null;
   let currentTab = "view-student";
+  let GLOBAL_DATABASE_CACHE = {};
 
-  // ─── LocalStorage 데이터 입출력 제어 함수 ───
+  // 데이터베이스 실시간 리스너 연결
+  onValue(ref(db, "booths"), (snapshot) => {
+    GLOBAL_DATABASE_CACHE = snapshot.val() || {};
+    
+    if (currentTab === "view-student" && currentStudent) refreshStamps();
+    if (currentTab === "view-booth" && activeBoothId) refreshBoothView();
+    if (currentTab === "view-admin" && document.getElementById("panel-ad-main").style.display === "block") refreshAdminDashboard();
+  });
+
   function getBoothData(boothId) {
-    try {
-      const data = localStorage.getItem("booth_" + boothId);
-      return data ? JSON.parse(data) : [];
-    } catch { return []; }
+    const data = GLOBAL_DATABASE_CACHE[boothId];
+    if (!data) return [];
+    return Object.keys(data).map(key => ({ id: key, ...data[key] }));
   }
 
-  function setBoothData(boothId, arr) {
-    try {
-      localStorage.setItem("booth_" + boothId, JSON.stringify(arr));
-      return true;
-    } catch { return false; }
-  }
-
-  // ─── 공통 알림 및 헬퍼 ───
+  // ─── 공통 기능 및 토스트 ───
   let toastTimer;
   function toast(msg) {
     const t = document.getElementById("element-toast");
@@ -313,7 +331,7 @@
     if (sectionId === "view-admin" && document.getElementById("panel-ad-main").style.display === "block") refreshAdminDashboard();
   }
 
-  // ─── 실행 제어 초기화 및 바인딩 ───
+  // ─── 초기 활성화 설정 ───
   document.addEventListener("DOMContentLoaded", () => {
     const stClassSel = document.getElementById("select-st-class");
     const stBoothSel = document.getElementById("select-st-booth");
@@ -331,7 +349,6 @@
       });
     });
 
-    // 기존 데이터 체크인 세션 자동복구
     try {
       const saved = localStorage.getItem("student_session");
       if (saved) {
@@ -343,7 +360,7 @@
       }
     } catch(e) {}
 
-    // 1. [학생용] 로그인 등록
+    // 학생 시작 세션 로그인
     document.getElementById("btn-st-login").addEventListener("click", () => {
       const name = document.getElementById("input-st-name").value.trim();
       if (!name) { toast("이름을 입력해 주세요."); return; }
@@ -366,13 +383,12 @@
       document.getElementById("panel-st-main").style.display = "none";
     });
 
-    // 2. [학생용] 체크인 요청 보내기 버튼 ★버튼 먹통 무한 락 현상 완벽 패치★
+    // 체크인 실시간 요청 전송 엔진
     document.getElementById("btn-st-request").addEventListener("click", () => {
       if (!currentStudent) return;
       const boothId = stBoothSel.value;
       const btn = document.getElementById("btn-st-request");
 
-      // UI 먹통 방지를 위해 비활성화 후 텍스트 즉시 변경
       btn.disabled = true;
       btn.textContent = "요청 중...";
 
@@ -386,25 +402,35 @@
 
       if (dup) {
         toast(dup.status === "approved" ? "이미 방문 완료한 부스입니다! ✅" : "이미 대기 중인 요청입니다 ⏳");
-      } else {
-        const cleaned = list.filter(x =>
-          !(x.name === currentStudent.name && x.classId === currentStudent.classId && x.status === "rejected")
-        );
-        cleaned.push({ id: uid(), name: currentStudent.name, classId: currentStudent.classId, status: "pending", ts: Date.now() });
-        if (setBoothData(boothId, cleaned)) {
-          toast("승인 요청을 보냈습니다! ⏳");
-        }
-      }
-
-      // 비동기 렌더링 엔진 꼬임 방지를 위한 0.6초 지연 안전 복구 코드 추가
-      setTimeout(() => {
         btn.disabled = false;
         btn.textContent = "체크인 요청 보내기";
-        refreshStamps();
-      }, 600);
+      } else {
+        const rejectedItems = list.filter(x => x.name === currentStudent.name && x.classId === currentStudent.classId && x.status === "rejected");
+        rejectedItems.forEach(item => {
+          remove(ref(db, `booths/${boothId}/${item.id}`));
+        });
+
+        const newRef = push(ref(db, `booths/${boothId}`));
+        set(newRef, {
+          name: currentStudent.name,
+          classId: currentStudent.classId,
+          status: "pending",
+          ts: serverTimestamp()
+        }).then(() => {
+          toast("승인 요청을 보냈습니다! ⏳");
+        }).catch(() => {
+          toast("네트워크 통신 오류가 발생했습니다. ❌");
+        }).finally(() => {
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.textContent = "체크인 요청 보내기";
+            refreshStamps();
+          }, 600);
+        });
+      }
     });
 
-    // 3. [부스용] 로그인 제어
+    // 부스 운영자 기능 제어
     document.getElementById("btn-bo-login").addEventListener("click", () => {
       const selected = boClassSel.value;
       const pw = document.getElementById("input-bo-pw").value.trim();
@@ -431,7 +457,7 @@
 
     document.getElementById("btn-bo-refresh").addEventListener("click", refreshBoothView);
 
-    // 4. [관리자용] 비밀번호 검사
+    // 마스터 비밀번호 인증
     document.getElementById("btn-ad-login").addEventListener("click", () => {
       const pw = document.getElementById("input-ad-pw").value.trim();
       if(pw === "1127") {
@@ -443,27 +469,19 @@
       }
     });
 
-    // 5. [관리자용] 공장 데이터 초기화
+    // 전체 삭제 포맷
     document.getElementById("btn-ad-reset").addEventListener("click", () => {
-      if(confirm("정말 기기에 축적된 모든 매칭 데이터를 삭제하고 초기화하겠습니까?")) {
-        CLASSES.forEach(c => {
-          localStorage.removeItem("booth_" + c.id);
+      if(confirm("정말 서버에 축적된 모든 매칭 데이터를 삭제하고 초기화하겠습니까?\n모든 학생의 도장이 지워집니다!")) {
+        remove(ref(db, "booths")).then(() => {
+          localStorage.removeItem("student_session");
+          alert("클라우드 서버 데이터가 완전히 포맷되었습니다.");
+          location.reload();
         });
-        localStorage.removeItem("student_session");
-        alert("모든 데이터가 완벽히 포맷되었습니다.");
-        location.reload();
       }
     });
-
-    // 실시간 현황 모니터링 폴링 루프 (4초 간격)
-    setInterval(() => {
-      if (currentTab === "view-student" && currentStudent) refreshStamps();
-      if (currentTab === "view-booth" && activeBoothId) refreshBoothView();
-      if (currentTab === "view-admin" && document.getElementById("panel-ad-main").style.display === "block") refreshAdminDashboard();
-    }, 4000);
   });
 
-  // ─── [화면 렌더링] 학생용 개인 도장판 ───
+  // 스탬프 UI 동적 갱신
   function refreshStamps() {
     if (!currentStudent) return;
     const grid = document.getElementById("area-stamp-grid");
@@ -500,7 +518,7 @@
     document.getElementById("banner-all-done").style.display = (count === 9) ? "block" : "none";
   }
 
-  // ─── [화면 렌더링] 부스 운영자 대기열 명단 ───
+  // 부스 승인 명단 UI 동적 갱신
   function refreshBoothView() {
     if (!activeBoothId) return;
     const list = getBoothData(activeBoothId);
@@ -537,21 +555,20 @@
 
       pendEl.querySelectorAll(".btn-action").forEach(btn => {
         btn.addEventListener("click", () => {
-          const fresh = getBoothData(activeBoothId);
-          const item = fresh.find(x => x.id === btn.dataset.id);
-          if (item) {
-            if (btn.dataset.act === "ok") {
-              item.status = "approved";
-              item.ts = Date.now();
-              toast(`${item.name} 학생 승인 완료 ✅`);
-            } else {
-              item.status = "rejected";
-              item.ts = Date.now();
-              toast("체크인 요청을 거절했습니다.");
-            }
-            setBoothData(activeBoothId, fresh);
+          const id = btn.dataset.id;
+          const act = btn.dataset.act;
+          
+          if (act === "ok") {
+            update(ref(db, `booths/${activeBoothId}/${id}`), {
+              status: "approved",
+              ts: serverTimestamp()
+            }).then(() => toast(`승인 완료 ✅`));
+          } else {
+            update(ref(db, `booths/${activeBoothId}/${id}`), {
+              status: "rejected",
+              ts: serverTimestamp()
+            }).then(() => toast("요청 거절 완료"));
           }
-          refreshBoothView();
         });
       });
     }
@@ -573,7 +590,7 @@
     }
   }
 
-  // ─── [화면 렌더링] 마스터 총괄 통계 현황판 ───
+  // 총괄 통계 관리 대시보드
   function refreshAdminDashboard() {
     const studentMap = {};
     let totalStamps = 0;
