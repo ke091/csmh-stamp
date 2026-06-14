@@ -244,7 +244,7 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-app.js";
-  import { getDatabase, ref, onValue, set, push, remove, update, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-database.js";
+  import { getDatabase, ref, get, set, push, remove, update, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-database.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyD1rALHQmM1PCFDv9Iw5WD5YDbllXjjP-o",
@@ -279,28 +279,32 @@
   let currentTab = "view-student";
   let GLOBAL_DATABASE_CACHE = {};
 
-  // 데이터 가공 헬퍼 함수
   function getBoothData(boothId) {
     const data = GLOBAL_DATABASE_CACHE[boothId];
     if (!data) return [];
     return Object.keys(data).map(key => ({ id: key, ...data[key] }));
   }
 
-  // 실시간 데이터베이스 이벤트 결합 (기기 간 동시 연동 무한 동기화)
-  onValue(ref(db, "booths"), (snapshot) => {
-    GLOBAL_DATABASE_CACHE = snapshot.val() || {};
-    triggerUIRefresh();
-  });
+  // [핵심 변경] 강제 초고속 동기화 폴링엔진 탑재 (0.5초 주기로 모든 기기 강제 싱크)
+  function startSyncEngine() {
+    setInterval(() => {
+      get(ref(db, "booths")).then((snapshot) => {
+        GLOBAL_DATABASE_CACHE = snapshot.val() || {};
+        triggerUIRefresh();
+      }).catch(e => console.error("싱크오류:", e));
+    }, 500);
+  }
+  startSyncEngine();
 
   function triggerUIRefresh() {
     try {
       if (currentTab === "view-student" && currentStudent) refreshStamps();
       if (currentTab === "view-booth" && activeBoothId) refreshBoothView();
       if (currentTab === "view-admin" && document.getElementById("panel-ad-main").style.display === "block") refreshAdminDashboard();
-    } catch(e) { console.error("UI 갱신 오류 감지:", e); }
+    } catch(e) {}
   }
 
-  // ─── 공통 알림 및 탭 관리 함수 ───
+  // ─── UI 알림 효과 및 내비게이션 ───
   let toastTimer;
   function toast(msg) {
     const t = document.getElementById("element-toast");
@@ -317,6 +321,7 @@
   }
 
   function timeStr(ts) {
+    if(!ts) return "방금 전";
     return new Date(ts).toLocaleTimeString("ko-KR", { hour:"2-digit", minute:"2-digit" });
   }
 
@@ -334,7 +339,7 @@
     triggerUIRefresh();
   }
 
-  // ─── 초기 로드 시 동작 바인딩 ───
+  // ─── 이벤트 리스너 바인딩 ───
   document.addEventListener("DOMContentLoaded", () => {
     const stClassSel = document.getElementById("select-st-class");
     const stBoothSel = document.getElementById("select-st-booth");
@@ -363,7 +368,6 @@
       }
     } catch(e) {}
 
-    // 학생 시작 세션 로그인
     document.getElementById("btn-st-login").addEventListener("click", () => {
       const name = document.getElementById("input-st-name").value.trim();
       if (!name) { toast("이름을 입력해 주세요."); return; }
@@ -386,35 +390,30 @@
       document.getElementById("panel-st-main").style.display = "none";
     });
 
-    // [핵심 변경] 먹통 원천 방어형 실시간 체크인 전송 모듈
+    // [중요] 타임아웃 락 프리 기능이 결합된 체크인 모듈
     document.getElementById("btn-st-request").addEventListener("click", () => {
       if (!currentStudent) return;
       const boothId = stBoothSel.value;
       const btn = document.getElementById("btn-st-request");
 
-      // 먼저 버튼 잠금 및 문구 변경
       btn.disabled = true;
       btn.textContent = "요청 중...";
 
-      // 네트워크 상황과 무관하게 0.8초 뒤 무조건 버튼 잠금을 강제 해제하는 안전 가드라인 구축
-      const safetyGuard = setTimeout(() => {
+      // 네트워크 응답 지연 여부와 관련없이 0.5초 뒤 완벽 복구 보장
+      setTimeout(() => {
         btn.disabled = false;
         btn.textContent = "체크인 요청 보내기";
-      }, 800);
+      }, 500);
 
       const list = getBoothData(boothId);
       const dup = list.find(x => x.name === currentStudent.name && x.classId === currentStudent.classId);
 
       if (dup) {
-        if (dup.status === "approved") {
-          toast("이미 방문 완료한 부스입니다! ✅");
-        } else if (dup.status === "pending") {
-          toast("이미 승인 대기 중인 요청입니다 ⏳");
-        }
+        if (dup.status === "approved") toast("이미 방문 완료한 부스입니다! ✅");
+        else if (dup.status === "pending") toast("이미 승인 대기 중인 요청입니다 ⏳");
         return; 
       }
 
-      // 파이어베이스 데이터베이스 전송
       const newRef = push(ref(db, `booths/${boothId}`));
       set(newRef, {
         name: currentStudent.name,
@@ -423,13 +422,11 @@
         ts: serverTimestamp()
       }).then(() => {
         toast("승인 요청을 보냈습니다! ⏳");
-      }).catch((e) => {
-        console.error(e);
-        toast("서버 전송 오류 발생 ❌");
+      }).catch(() => {
+        toast("전송 에러 ❌ (Rules 설정을 체크하세요)");
       });
     });
 
-    // 부스 비밀번호 체크 로그인
     document.getElementById("btn-bo-login").addEventListener("click", () => {
       const selected = boClassSel.value;
       const pw = document.getElementById("input-bo-pw").value.trim();
@@ -456,7 +453,6 @@
 
     document.getElementById("btn-bo-refresh").addEventListener("click", refreshBoothView);
 
-    // 총괄 관리자 인증
     document.getElementById("btn-ad-login").addEventListener("click", () => {
       const pw = document.getElementById("input-ad-pw").value.trim();
       if(pw === "1127") {
@@ -468,19 +464,17 @@
       }
     });
 
-    // 전체 마스터 포맷 초기화 기능
     document.getElementById("btn-ad-reset").addEventListener("click", () => {
-      if(confirm("정말 서버에 축적된 모든 매칭 데이터를 삭제하고 초기화하겠습니까?\n모든 학생의 도장이 지워집니다!")) {
+      if(confirm("정말 전체 데이터를 포맷하시겠습니까?")) {
         remove(ref(db, "booths")).then(() => {
           localStorage.removeItem("student_session");
-          alert("클라우드 서버 데이터가 완전히 포맷되었습니다.");
+          alert("초기화 완료");
           location.reload();
         });
       }
     });
   });
 
-  // 학생 화면 스탬프 동적 갱신
   function refreshStamps() {
     if (!currentStudent) return;
     const grid = document.getElementById("area-stamp-grid");
@@ -513,7 +507,6 @@
     document.getElementById("banner-all-done").style.display = (count === 9) ? "block" : "none";
   }
 
-  // 부스 운영자 리스트 드로우 및 액션 설정
   function refreshBoothView() {
     if (!activeBoothId) return;
     const list = getBoothData(activeBoothId);
@@ -548,7 +541,6 @@
         pendEl.appendChild(row);
       });
 
-      // 승인 버튼 액션
       pendEl.querySelectorAll(".btn-ok").forEach(btn => {
         btn.addEventListener("click", (e) => {
           const id = e.target.dataset.id;
@@ -559,11 +551,11 @@
         });
       });
 
-      // 거절 버튼 액션 (데이터베이스에서 바로 파기 처리하여 학생 재신청 통로 확보)
+      // 거절 시 찌꺼기가 남지 않도록 완벽 파기
       pendEl.querySelectorAll(".btn-no").forEach(btn => {
         btn.addEventListener("click", (e) => {
           const id = e.target.dataset.id;
-          remove(ref(db, `booths/${activeBoothId}/${id}`)).then(() => toast("요청 거절 및 삭제 완료"));
+          remove(ref(db, `booths/${activeBoothId}/${id}`)).then(() => toast("거절 및 삭제 완료"));
         });
       });
     }
@@ -585,7 +577,6 @@
     }
   }
 
-  // 총괄 통계 보드 핸들러
   function refreshAdminDashboard() {
     const studentMap = {};
     let totalStamps = 0;
